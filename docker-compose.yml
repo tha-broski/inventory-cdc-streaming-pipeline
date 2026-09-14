@@ -56,6 +56,13 @@ services:
     
     depends_on:
       - kafka
+
+  spark:
+    image: apache/spark:4.1.1-python3
+    volumes:
+      - ./src:/opt/spark-app
+    depends_on:
+      - kafka
       
 volumes: 
   postgres_source_data:
