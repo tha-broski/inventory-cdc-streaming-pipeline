@@ -15,6 +15,40 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     ports:
       - "29092:29092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+  
+  kafka-init:
+    image: apache/kafka:4.3.1
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    entrypoint:
+      - /opt/kafka/bin/kafka-topics.sh
+
+    command:
+      - --bootstrap-server
+      - kafka:9092
+      - --create
+      - --if-not-exists
+      - --topic
+      - inventory.products.dlq
+      - --partitions
+      - "1"
+      - --replication-factor
+      - "1"
 
   postgres-source:
     image: postgres:17
@@ -22,9 +56,9 @@ services:
     command: ["postgres", "-c", "wal_level=logical"]
 
     environment:
-      POSTGRES_USER: cdc_user
-      POSTGRES_PASSWORD: cdc_password
-      POSTGRES_DB: inventory_source
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
 
     ports:
       - "5433:5432"
@@ -33,10 +67,31 @@ services:
       - postgres_source_data:/var/lib/postgresql/data
 
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cdc_user -d inventory_source"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  postgres-target:
+    image: postgres:17
+
+    environment:
+        POSTGRES_USER: ${TARGET_POSTGRES_USER}
+        POSTGRES_PASSWORD: ${TARGET_POSTGRES_PASSWORD}
+        POSTGRES_DB: ${TARGET_POSTGRES_DB}
+
+    ports: 
+      - "5434:5432"
+
+    volumes:
+      - postgres_target_data:/var/lib/postgresql/data
+      
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TARGET_POSTGRES_USER} -d {TARGET_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      
 
   connect:
     image: quay.io/debezium/connect:3.6
@@ -51,19 +106,62 @@ services:
       OFFSET_STORAGE_REPLICATION_FACTOR: 1
       STATUS_STORAGE_REPLICATION_FACTOR: 1
 
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+
     ports:
       - "8083:8083"
     
     depends_on:
       - kafka
 
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/connectors || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  connector-init:
+    image: curlimages/curl:latest
+
+    depends_on:
+      connect:
+        condition: service_healthy
+
+    volumes:
+      - ./config:/config:ro
+
+    command:
+      [
+        "-X",
+        "PUT",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "@/config/debezium-postgres-source-config.json",
+        "http://connect:8083/connectors/inventory-postgres-source/config"
+      ]
+
   spark:
-    image: apache/spark:4.1.1-python3
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
     volumes:
       - ./src:/opt/spark-app
+      - ./checkpoints:/opt/spark-checkpoints
+    environment:
+      TARGET_POSTGRES_USER: ${TARGET_POSTGRES_USER}
+      TARGET_POSTGRES_PASSWORD: ${TARGET_POSTGRES_PASSWORD}
+      TARGET_POSTGRES_DB: ${TARGET_POSTGRES_DB}
     depends_on:
       - kafka
       
 volumes: 
   postgres_source_data:
+  postgres_target_data:
+  kafka_data:
 
