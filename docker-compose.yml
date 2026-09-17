@@ -36,19 +36,34 @@ services:
         condition: service_healthy
 
     entrypoint:
-      - /opt/kafka/bin/kafka-topics.sh
+      - /bin/sh
+      - -c
 
     command:
-      - --bootstrap-server
-      - kafka:9092
-      - --create
-      - --if-not-exists
-      - --topic
-      - inventory.products.dlq
-      - --partitions
-      - "1"
-      - --replication-factor
-      - "1"
+      - |
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:9092 \
+          --create \
+          --if-not-exists \
+          --topic inventory.products.dlq \
+          --partitions 1 \
+          --replication-factor 1
+
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:9092 \
+          --create \
+          --if-not-exists \
+          --topic inventory.warehouses.dlq \
+          --partitions 1 \
+          --replication-factor 1
+
+        /opt/kafka/bin/kafka-topics.sh \
+        --bootstrap-server kafka:9092 \
+        --create \
+        --if-not-exists \
+        --topic inventory.inventory.dlq \
+        --partitions 1 \
+        --replication-factor 1
 
   postgres-source:
     image: postgres:17
