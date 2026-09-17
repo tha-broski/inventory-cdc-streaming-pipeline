@@ -1,0 +1,1 @@
+docker compose exec postgres-source sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
