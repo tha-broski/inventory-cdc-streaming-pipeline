@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+
+  pull_request:
+    branches:
+      - main
+      - dev
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Spark image
+        run: docker compose build spark
+
+      - name: Run tests
+        run: |
+          docker compose run --rm \
+            -e PYTHONPATH=/opt/spark-app \
+            spark \
+            python3 -m pytest /opt/spark-tests -v \
+            -p no:cacheprovider
