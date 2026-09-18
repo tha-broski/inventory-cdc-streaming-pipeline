@@ -20,7 +20,11 @@ def validate_products(events_df):
 
     validated_df = validated_df.withColumn(
         "error_type",
-        when(~col("op").isin("r", "c", "u", "d"), "INVALID_OPERATION")
+        when(
+            col("op").isNull() & col("before").isNull() & col("after").isNull(),
+            "MALFORMED_PAYLOAD",
+        )
+        .when(~col("op").isin("r", "c", "u", "d"), "INVALID_OPERATION")
         .when(col("product_id").isNull(), "MISSING_PRODUCT_ID")
         .when(
             col("op").isin("r", "c", "u")
@@ -55,7 +59,11 @@ def validate_warehouses(events_df):
 
     validated_df = validated_df.withColumn(
         "error_type",
-        when(~col("op").isin("r", "c", "u", "d"), "INVALID_OPERATION")
+        when(
+            col("op").isNull() & col("before").isNull() & col("after").isNull(),
+            "MALFORMED_PAYLOAD",
+        )
+        .when(~col("op").isin("r", "c", "u", "d"), "INVALID_OPERATION")
         .when(col("warehouse_id").isNull(), "MISSING_WAREHOUSE_ID")
         .when(
             col("op").isin("r", "c", "u")
@@ -103,6 +111,10 @@ def validate_inventory(events_df):
     validated_df = validated_df.withColumn(
         "error_type",
         when(
+            col("op").isNull() & col("before").isNull() & col("after").isNull(),
+            "MALFORMED_PAYLOAD",
+        )
+        .when(
             ~col("op").isin("r", "c", "u", "d"),
             "INVALID_OPERATION",
         )
