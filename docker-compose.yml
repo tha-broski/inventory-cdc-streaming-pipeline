@@ -168,6 +168,7 @@ services:
     volumes:
       - ./src:/opt/spark-app
       - ./checkpoints:/opt/spark-checkpoints
+      - ./tests:/opt/spark-tests
     environment:
       TARGET_POSTGRES_USER: ${TARGET_POSTGRES_USER}
       TARGET_POSTGRES_PASSWORD: ${TARGET_POSTGRES_PASSWORD}

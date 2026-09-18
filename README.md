@@ -25,7 +25,7 @@ Spark Structured Streaming
 PostgreSQL Target       Kafka DLQ
 ```
 
-The pipeline currently processes three entities:
+The pipeline processes three entities:
 
 - `products`
 - `warehouses`
@@ -42,6 +42,7 @@ Each source table is captured by Debezium and published to its own Kafka topic.
 - PySpark
 - Python
 - psycopg
+- pytest
 - Docker
 - Docker Compose
 
@@ -68,12 +69,46 @@ u - update
 d - delete
 ```
 
+## Kafka Source Processing
+
+Kafka source handling is centralized in `src/sources/kafka.py`.
+
+Each CDC stream follows the same processing path:
+
+```text
+Kafka value
+    |
+    v
+CAST(value AS STRING)
+    |
+    v
+raw_value
+    |
+    v
+from_json(...)
+    |
+    v
+before / after / op
+```
+
+The original Kafka payload is preserved as `raw_value` so invalid records can be written to the DLQ together with the exact message that caused the validation failure.
+
+Kafka metadata is also preserved:
+
+```text
+topic
+partition
+offset
+timestamp
+```
+
 ## Data Validation
 
 Incoming events are validated before being written to the target database.
 
 Validation includes cases such as:
 
+- malformed payload
 - unsupported CDC operation
 - missing entity identifier
 - invalid product price
@@ -91,7 +126,7 @@ inventory.warehouses.dlq
 inventory.inventory.dlq
 ```
 
-DLQ messages contain information such as:
+DLQ messages contain:
 
 ```text
 raw_payload
@@ -119,6 +154,65 @@ For every micro-batch:
 
 The upsert operation makes repeated processing of the same final state idempotent.
 
+PostgreSQL write logic is centralized in `src/sinks/postgres.py`.
+
+The sink includes:
+
+- staging-table writes
+- parameterized delete operations
+- safe SQL identifier handling with `psycopg.sql.Identifier`
+- retry handling for transient PostgreSQL connection errors
+- final upsert execution
+
+## Retry Handling
+
+Transient PostgreSQL connection errors are retried automatically.
+
+The retry mechanism:
+
+- retries only `psycopg.OperationalError`
+- performs up to 3 attempts by default
+- waits between attempts
+- logs retry attempts
+- re-raises the final exception if all attempts fail
+
+Errors such as invalid SQL or constraint violations are not retried automatically because repeating the same operation would not resolve them.
+
+## SQL Safety
+
+Dynamic table and column names are handled with:
+
+```python
+psycopg.sql.Identifier
+```
+
+Values are passed separately through parameterized queries.
+
+This keeps SQL identifiers and data values separate and avoids unsafe string interpolation.
+
+## Logging
+
+The project uses Python's built-in `logging` module.
+
+Logs include:
+
+- timestamp
+- log level
+- module name
+- batch information
+- delete counts
+- PostgreSQL retry warnings and errors
+
+Example:
+
+```text
+2026-09-18 20:36:25,893 | INFO | processors.products | Processing products batch 8
+2026-09-18 20:36:30,042 | INFO | processors.products | Products batch 8 contains 1 deletes
+2026-09-18 20:36:30,311 | INFO | processors.inventory | Inventory batch 6 contains 9 deletes
+```
+
+This also makes cascade-delete processing visible across independent streaming queries.
+
 ## Referential Integrity and Eventual Consistency
 
 The source PostgreSQL database enforces foreign keys:
@@ -139,7 +233,19 @@ Debezium captures those changes as separate CDC events. These events are process
 
 Because separate streams may be processed at different speeds, the target database intentionally does not enforce foreign keys between `inventory`, `products` and `warehouses`.
 
-This allows temporary inconsistencies during processing while the system converges toward the correct final state. This is an example of eventual consistency.
+This allows temporary inconsistencies during processing while the system converges toward the correct final state.
+
+This is an example of eventual consistency.
+
+## Kafka Ordering Assumption
+
+Kafka offsets are ordered only within a partition.
+
+The current implementation uses the highest offset to choose the latest event for a given entity within a micro-batch.
+
+This assumes that events for the same entity key remain in the same Kafka partition.
+
+The current project uses one partition per CDC topic, so this assumption is satisfied.
 
 ## Kafka Persistence
 
@@ -180,32 +286,73 @@ checkpoints/inventory
 checkpoints/inventory-dlq
 ```
 
+## Automated Tests
+
+The project includes pytest-based Spark tests.
+
+Tests currently cover:
+
+- selecting the latest event by Kafka offset
+- update/delete ordering within a micro-batch
+- valid inventory records
+- negative inventory quantity
+- delete events using IDs from `before`
+- invalid timestamps
+- invalid CDC operations
+- malformed payload routing
+- invalid product prices
+- warehouse validation
+
+Tests run inside the Spark Docker environment.
+
+Run them with:
+
+```powershell
+.\scripts\run-tests.ps1
+```
+
 ## Project Structure
 
 ```text
 inventory-cdc-streaming-pipeline/
 ├── config/
 │   └── debezium-postgres-source-config.json
+│
 ├── scripts/
 │   ├── connect-source.ps1
 │   ├── connect-target.ps1
-│   └── run-stream.ps1
+│   ├── run-stream.ps1
+│   └── run-tests.ps1
+│
 ├── sql/
 │   ├── source_schema.sql
 │   └── target_schema.sql
+│
 ├── src/
 │   ├── processors/
 │   │   ├── products.py
 │   │   ├── warehouses.py
 │   │   └── inventory.py
+│   │
 │   ├── sinks/
 │   │   ├── postgres.py
 │   │   └── kafka.py
+│   │
+│   ├── sources/
+│   │   └── kafka.py
+│   │
 │   ├── config.py
+│   ├── logger.py
 │   ├── schemas.py
 │   ├── validation.py
 │   ├── transformations.py
 │   └── streaming_job.py
+│
+├── tests/
+│   ├── conftest.py
+│   ├── test_transformations.py
+│   └── test_validation.py
+│
 ├── checkpoints/
 ├── Dockerfile.spark
 ├── docker-compose.yml
@@ -229,13 +376,19 @@ docker compose up -d
 .\scripts\run-stream.ps1
 ```
 
-### 3. Connect to the source PostgreSQL database
+### 3. Run tests
+
+```powershell
+.\scripts\run-tests.ps1
+```
+
+### 4. Connect to the source PostgreSQL database
 
 ```powershell
 .\scripts\connect-source.ps1
 ```
 
-### 4. Connect to the target PostgreSQL database
+### 5. Connect to the target PostgreSQL database
 
 ```powershell
 .\scripts\connect-target.ps1
@@ -272,6 +425,8 @@ DELETE on target
 
 With `ON DELETE CASCADE`, deleting a product or warehouse can additionally produce delete events for related inventory rows.
 
+For example, deleting one product can result in one `products` delete event and multiple `inventory` delete events processed by separate streaming queries.
+
 ## Current Status
 
 Implemented:
@@ -284,26 +439,19 @@ Implemented:
 - products CDC pipeline
 - warehouses CDC pipeline
 - inventory CDC pipeline
-- snapshot processing
-- create processing
-- update processing
-- delete processing
-- PostgreSQL staging tables
-- PostgreSQL upserts
+- snapshot, create, update and delete processing
+- PostgreSQL staging tables and upserts
 - cascade delete handling
 - record validation
+- malformed payload detection
 - Kafka Dead Letter Queues
 - Spark checkpointing
 - Docker-based local environment
-- eventual-consistency handling between related streams
-
-Planned:
-
-- automated validation tests
-- Spark transformation tests
-- micro-batch ordering tests
-- integration tests
-- monitoring and observability improvements
+- eventual consistency handling
+- transient PostgreSQL retry handling
+- safe dynamic SQL identifier handling
+- structured application logging
+- automated Spark validation and transformation tests
 
 ## Purpose
 
@@ -320,5 +468,9 @@ The project was created as a practical Data Engineering portfolio project focuse
 - data validation
 - Dead Letter Queues
 - checkpointing
+- retry handling
+- SQL safety
+- logging
+- automated testing
 - eventual consistency
 - Docker-based data infrastructure
